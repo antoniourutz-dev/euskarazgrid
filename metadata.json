@@ -1,0 +1,6 @@
+{
+  "name": "Euskaraz Grid Generator",
+  "description": "Crea hojas de vocabulario personalizables con el estilo Euskaraz y exporta a PDF.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
