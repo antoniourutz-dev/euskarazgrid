@@ -38,6 +38,20 @@ interface GridItem {
   underlineLastA?: boolean;
 }
 
+interface PageSettings {
+  backText1: string;
+  backText2: string;
+  backText3: string;
+  backFontSize: number;
+}
+
+const DEFAULT_PAGE_SETTINGS: PageSettings = {
+  backText1: 'IVAP 2. HE 2022-11-05',
+  backText2: 'SINONIMO',
+  backText3: 'DOMINOA 1',
+  backFontSize: 15,
+};
+
 const INITIAL_ITEMS: GridItem[] = [
   { id: '1', topText: 'BULTZATU', bottomText: 'ZUZENDU' },
   { id: '2', topText: 'ARTEZTU', bottomText: 'TREBATU' },
@@ -173,11 +187,29 @@ export default function App() {
   const [showLogo, setShowLogo] = useState(true);
   const [logoSizeMultiplier, setLogoSizeMultiplier] = useState(2.1);
 
-  // Back side state
-  const [backText1, setBackText1] = useState('IVAP 2. HE 2022-11-05');
-  const [backText2, setBackText2] = useState('SINONIMO');
-  const [backText3, setBackText3] = useState('DOMINOA 1');
-  const [backFontSize, setBackFontSize] = useState(15);
+  // Page management
+  const [currentPage, setCurrentPage] = useState(0);
+  const itemsPerPage = 24; // Fixed as per requirements: 24 parejas per page
+  const totalPages = Math.max(1, Math.ceil(items.length / itemsPerPage));
+
+  // Back side state (per page)
+  const [pageSettings, setPageSettings] = useState<Record<number, PageSettings>>({
+    0: { ...DEFAULT_PAGE_SETTINGS }
+  });
+
+  const getPageSettings = (pageIndex: number): PageSettings => {
+    return pageSettings[pageIndex] || { ...DEFAULT_PAGE_SETTINGS };
+  };
+
+  const updatePageSetting = (field: keyof PageSettings, value: any) => {
+    setPageSettings(prev => ({
+      ...prev,
+      [currentPage]: {
+        ...getPageSettings(currentPage),
+        [field]: value
+      }
+    }));
+  };
 
   // Export state
   const [isExportModalOpen, setIsExportModalOpen] = useState(false);
@@ -224,15 +256,10 @@ export default function App() {
         new Promise<void>((resolve) => window.requestAnimationFrame(() => window.requestAnimationFrame(() => resolve())));
 
       // Helper to render and capture a specific set of items
-      const captureItemsToCanvas = async (chunkItems: GridItem[], tab: 'front' | 'back') => {
-        // We need a way to temporarily show ONLY these items
-        // We'll use a local state to tell the component what to render during export
+      const captureItemsToCanvas = async (chunkItems: GridItem[], tab: 'front' | 'back', pageIndex: number) => {
+        // We need a way to temporarily show ONLY these items and settings
         setActiveTab(tab);
-        // We'll temporarily override the rendered items in the ref by using a custom render logic
-        // For simplicity, we'll use a hack: modify the items state temporarily or pass a prop
-        // But better: since we are already in the ref, we can reach into the DOM if needed.
-        // Actually, the cleanest way is a dedicated exportItems state.
-        setExportItems(chunkItems); 
+        setExportPageInfo({ items: chunkItems, index: pageIndex });
         await waitForPaint();
         
         if (!componentRef.current) throw new Error('Missing export ref');
@@ -263,15 +290,15 @@ export default function App() {
 
       // Process each chunk
       for (let i = 0; i < chunks.length; i++) {
-        const frontCanvas = await captureItemsToCanvas(chunks[i], 'front');
+        const frontCanvas = await captureItemsToCanvas(chunks[i], 'front', i);
         addCanvasToPdf(frontCanvas, i === 0 && pdf.internal.pages.length === 1);
         
-        const backCanvas = await captureItemsToCanvas(chunks[i], 'back');
+        const backCanvas = await captureItemsToCanvas(chunks[i], 'back', i);
         addCanvasToPdf(backCanvas, false);
       }
 
       // Restore UI state
-      setExportItems(null);
+      setExportPageInfo(null);
       setActiveTab(previousTab);
 
       // 3. Save
@@ -321,9 +348,14 @@ export default function App() {
     }));
   };
 
-  const [exportItems, setExportItems] = useState<GridItem[] | null>(null);
-  const displayItems = exportItems || items;
-  const itemsPerPage = columns * 6;
+  const [exportPageInfo, setExportPageInfo] = useState<{ items: GridItem[], index: number } | null>(null);
+  
+  const currentDisplayPage = exportPageInfo ? exportPageInfo.index : currentPage;
+  const displayItems = exportPageInfo 
+    ? exportPageInfo.items 
+    : items.slice(currentPage * itemsPerPage, (currentPage + 1) * itemsPerPage);
+    
+  const currentSettings = getPageSettings(currentDisplayPage);
 
   return (
     <div className="min-h-screen bg-[#F8F9FA] p-4 md:p-8 font-sans text-slate-900">
@@ -576,15 +608,15 @@ export default function App() {
                       <div className="space-y-3">
                         <div className="space-y-1.5">
                           <Label className="text-[10px] uppercase font-bold text-slate-400">1. Lerroa</Label>
-                          <Input value={backText1} onChange={(e) => setBackText1(e.target.value)} />
+                          <Input value={currentSettings.backText1} onChange={(e) => updatePageSetting('backText1', e.target.value)} />
                         </div>
                         <div className="space-y-1.5">
                           <Label className="text-[10px] uppercase font-bold text-slate-400">2. Lerroa</Label>
-                          <Input value={backText2} onChange={(e) => setBackText2(e.target.value)} />
+                          <Input value={currentSettings.backText2} onChange={(e) => updatePageSetting('backText2', e.target.value)} />
                         </div>
                         <div className="space-y-1.5">
                           <Label className="text-[10px] uppercase font-bold text-slate-400">3. Lerroa</Label>
-                          <Input value={backText3} onChange={(e) => setBackText3(e.target.value)} />
+                          <Input value={currentSettings.backText3} onChange={(e) => updatePageSetting('backText3', e.target.value)} />
                         </div>
                       </div>
 
@@ -593,17 +625,17 @@ export default function App() {
                           <Label className="text-xs font-bold uppercase text-slate-500">Atzealdeko Letra-tamaina</Label>
                           <Input 
                             type="number" 
-                            value={backFontSize} 
-                            onChange={(e) => setBackFontSize(parseInt(e.target.value) || 12)}
+                            value={currentSettings.backFontSize} 
+                            onChange={(e) => updatePageSetting('backFontSize', parseInt(e.target.value) || 12)}
                             className="w-16 h-8 text-right font-mono"
                           />
                         </div>
                         <Slider 
-                          value={[backFontSize]} 
+                          value={[currentSettings.backFontSize]} 
                           min={12} 
                           max={60} 
                           step={1} 
-                          onValueChange={(val) => setBackFontSize(val[0])} 
+                          onValueChange={(val) => updatePageSetting('backFontSize', val[0])} 
                         />
                       </div>
                     </div>
@@ -726,9 +758,29 @@ export default function App() {
             <div className="sticky top-8">
               <div className="mb-4 flex items-center justify-between">
                 <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-500">
-                  Aurrebista {items.length > itemsPerPage && `(${Math.ceil(items.length / itemsPerPage)} orri)`}
+                  Aurrebista {totalPages > 1 && `(${currentPage + 1} / ${totalPages} orri)`}
                 </h2>
-                <div className="text-xs text-slate-400">A4 Bertikala</div>
+                <div className="flex items-center gap-2">
+                  <Button 
+                    variant="outline" 
+                    size="sm" 
+                    onClick={() => setCurrentPage(Math.max(0, currentPage - 1))}
+                    disabled={currentPage === 0}
+                    className="h-7 px-2"
+                  >
+                    Atzera
+                  </Button>
+                  <Button 
+                    variant="outline" 
+                    size="sm" 
+                    onClick={() => setCurrentPage(Math.min(totalPages - 1, currentPage + 1))}
+                    disabled={currentPage >= totalPages - 1}
+                    className="h-7 px-2"
+                  >
+                    Aurrera
+                  </Button>
+                  <span className="text-xs text-slate-400 ml-2">A4 Bertikala</span>
+                </div>
               </div>
               
               <div className="bg-white shadow-2xl rounded-sm overflow-hidden border border-slate-200">
@@ -763,10 +815,10 @@ export default function App() {
                       displayItems.map((item) => (
                         <BackCard 
                           key={`back-${item.id}`}
-                          text1={backText1}
-                          text2={backText2}
-                          text3={backText3}
-                          fontSize={backFontSize}
+                          text1={currentSettings.backText1}
+                          text2={currentSettings.backText2}
+                          text3={currentSettings.backText3}
+                          fontSize={currentSettings.backFontSize}
                           className="border-r-8 border-b-8 border-black"
                         />
                       ))
