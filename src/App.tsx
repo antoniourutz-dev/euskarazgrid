@@ -14,7 +14,15 @@ import { Switch } from '@/components/ui/switch';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Plus, Trash2, Printer, Settings2, LayoutGrid, Type, FileDown } from 'lucide-react';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
+import { Plus, Trash2, Printer, Settings2, LayoutGrid, Type, FileDown, Loader2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { jsPDF } from 'jspdf';
 import { toCanvas } from 'html-to-image';
@@ -171,6 +179,11 @@ export default function App() {
   const [backText3, setBackText3] = useState('DOMINOA 1');
   const [backFontSize, setBackFontSize] = useState(15);
 
+  // Export state
+  const [isExportModalOpen, setIsExportModalOpen] = useState(false);
+  const [exportFilename, setExportFilename] = useState('euskaraz-grid-export');
+  const [isExporting, setIsExporting] = useState(false);
+
   const componentRef = useRef<HTMLDivElement>(null);
 
   const handlePrint = useReactToPrint({
@@ -178,34 +191,62 @@ export default function App() {
     documentTitle: 'Euskaraz-Grid',
   });
 
-  const exportPDF = async () => {
+  const performExport = async () => {
     try {
+      // 1. Open the Save Picker immediately
+      let fileHandle: any = null;
+      if ('showSaveFilePicker' in window) {
+        try {
+          fileHandle = await (window as any).showSaveFilePicker({
+            suggestedName: 'euskaraz-grid-export.pdf',
+            types: [{
+              description: 'PDF Document',
+              accept: { 'application/pdf': ['.pdf'] },
+            }],
+          });
+        } catch (err: any) {
+          if (err.name === 'AbortError') return;
+          console.error('Save picker error:', err);
+        }
+      }
+
+      setIsExporting(true);
       if (!componentRef.current) return;
 
       const previousTab = activeTab;
+      const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+      const chunks = [];
+      for (let i = 0; i < items.length; i += itemsPerPage) {
+        chunks.push(items.slice(i, i + itemsPerPage));
+      }
 
       const waitForPaint = () =>
         new Promise<void>((resolve) => window.requestAnimationFrame(() => window.requestAnimationFrame(() => resolve())));
 
-      const captureTabToCanvas = async (tab: 'front' | 'back') => {
+      // Helper to render and capture a specific set of items
+      const captureItemsToCanvas = async (chunkItems: GridItem[], tab: 'front' | 'back') => {
+        // We need a way to temporarily show ONLY these items
+        // We'll use a local state to tell the component what to render during export
         setActiveTab(tab);
+        // We'll temporarily override the rendered items in the ref by using a custom render logic
+        // For simplicity, we'll use a hack: modify the items state temporarily or pass a prop
+        // But better: since we are already in the ref, we can reach into the DOM if needed.
+        // Actually, the cleanest way is a dedicated exportItems state.
+        setExportItems(chunkItems); 
         await waitForPaint();
+        
         if (!componentRef.current) throw new Error('Missing export ref');
 
-        return await toCanvas(componentRef.current, {
+        const canvas = await toCanvas(componentRef.current, {
           backgroundColor: '#ffffff',
           cacheBust: true,
           pixelRatio: 2,
         });
+        
+        return canvas;
       };
 
-      const frontCanvas = await captureTabToCanvas('front');
-      const backCanvas = await captureTabToCanvas('back');
-      setActiveTab(previousTab);
-
-      const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
-
-      const addCanvasAsPage = (canvas: HTMLCanvasElement, isFirstPage: boolean) => {
+      const addCanvasToPdf = (canvas: HTMLCanvasElement, isFirst: boolean) => {
         const imgData = canvas.toDataURL('image/png');
         const pageW = pdf.internal.pageSize.getWidth();
         const pageH = pdf.internal.pageSize.getHeight();
@@ -216,15 +257,37 @@ export default function App() {
         const x = (pageW - renderW) / 2;
         const y = (pageH - renderH) / 2;
 
-        if (!isFirstPage) pdf.addPage();
+        if (!isFirst) pdf.addPage();
         pdf.addImage(imgData, 'PNG', x, y, renderW, renderH, undefined, 'FAST');
       };
 
-      addCanvasAsPage(frontCanvas, true);
-      addCanvasAsPage(backCanvas, false);
-      pdf.save('euskaraz-anverso-reverso.pdf');
+      // Process each chunk
+      for (let i = 0; i < chunks.length; i++) {
+        const frontCanvas = await captureItemsToCanvas(chunks[i], 'front');
+        addCanvasToPdf(frontCanvas, i === 0 && pdf.internal.pages.length === 1);
+        
+        const backCanvas = await captureItemsToCanvas(chunks[i], 'back');
+        addCanvasToPdf(backCanvas, false);
+      }
+
+      // Restore UI state
+      setExportItems(null);
+      setActiveTab(previousTab);
+
+      // 3. Save
+      if (fileHandle) {
+        const writable = await fileHandle.createWritable();
+        const pdfBlob = pdf.output('blob');
+        await writable.write(pdfBlob);
+        await writable.close();
+      } else {
+        pdf.save('euskaraz-grid-export.pdf');
+      }
+      
     } catch (error) {
       console.error('Error al exportar PDF:', error);
+    } finally {
+      setIsExporting(false);
     }
   };
 
@@ -258,6 +321,10 @@ export default function App() {
     }));
   };
 
+  const [exportItems, setExportItems] = useState<GridItem[] | null>(null);
+  const displayItems = exportItems || items;
+  const itemsPerPage = columns * 6;
+
   return (
     <div className="min-h-screen bg-[#F8F9FA] p-4 md:p-8 font-sans text-slate-900">
       <div className="mx-auto max-w-7xl">
@@ -271,9 +338,36 @@ export default function App() {
               <Printer className="h-4 w-4" />
               Inprimatu
             </Button>
-            <Button variant="outline" onClick={exportPDF} className="gap-2 border-blue-200 text-blue-700 hover:bg-blue-50">
-              <FileDown className="h-4 w-4" />
-              Esportatu PDFa
+            <Button 
+              variant="outline" 
+              onClick={performExport} 
+              disabled={isExporting}
+              className="gap-2 border-blue-200 text-blue-700 hover:bg-blue-50"
+            >
+              {isExporting ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  Exportatzen...
+                </>
+              ) : (
+                <>
+                  <FileDown className="h-4 w-4" />
+                  Esportatu PDFa
+                </>
+              )}
+            </Button>
+            <Button 
+              variant="outline"
+              onClick={() => {
+                if (items.length > 0) {
+                  setItems(items.slice(0, -1));
+                }
+              }}
+              className="gap-2 border-slate-200 text-slate-600 hover:bg-slate-50"
+              disabled={items.length === 0}
+            >
+              <Trash2 className="h-4 w-4" />
+              Kendu Hitza
             </Button>
             <Button onClick={addItem} className="gap-2 bg-[#1D3A8A] hover:bg-[#1e3a8a]/90">
               <Plus className="h-4 w-4" />
@@ -281,6 +375,75 @@ export default function App() {
             </Button>
           </div>
         </header>
+
+        <div className="mb-6 flex items-center justify-end gap-3">
+          <input
+            type="file"
+            id="csv-import"
+            accept=".csv"
+            className="hidden"
+            onChange={async (e) => {
+              const file = e.target.files?.[0];
+              if (!file) return;
+              
+              const reader = new FileReader();
+              reader.onload = (event) => {
+                const text = event.target?.result as string;
+                const lines = text.split('\n').filter(line => line.trim());
+                // Skip header if it exists (check if first line contains common keywords)
+                const startIdx = lines[0].toLowerCase().includes('text') ? 1 : 0;
+                
+                const newItems: GridItem[] = lines.slice(startIdx).map((line, idx) => {
+                  const [topText, bottomText, underline, topSize, bottomSize] = line.split(';').map(s => s.trim());
+                  return {
+                    id: `import-${Date.now()}-${idx}`,
+                    topText: topText || '',
+                    bottomText: bottomText || '',
+                    underlineLastA: underline === 'true',
+                    topFontSize: parseInt(topSize) || fontSize,
+                    bottomFontSize: parseInt(bottomSize) || fontSize
+                  };
+                });
+                
+                if (newItems.length > 0) {
+                  setItems(newItems);
+                  alert(`${newItems.length} hitz kargatu dira.`);
+                }
+              };
+              reader.readAsText(file);
+              // Reset input so same file can be imported twice
+              e.target.value = '';
+            }}
+          />
+          <Label 
+            htmlFor="csv-import" 
+            className="flex items-center gap-2 px-3 py-2 rounded-md border border-slate-200 bg-white hover:bg-slate-50 cursor-pointer text-sm font-medium text-slate-700 transition-colors"
+          >
+            <Plus className="h-4 w-4 rotate-45 transform" />
+            CSV Kargatu
+          </Label>
+          <Button 
+            variant="outline" 
+            size="sm"
+            onClick={() => {
+              const header = "TopText;BottomText;UnderlineLastA;TopFontSize;BottomFontSize\n";
+              const rows = items.map(i => 
+                `${i.topText};${i.bottomText};${i.underlineLastA};${i.topFontSize || fontSize};${i.bottomFontSize || fontSize}`
+              ).join('\n');
+              
+              const blob = new Blob([header + rows], { type: 'text/csv;charset=utf-8;' });
+              const url = URL.createObjectURL(blob);
+              const link = document.createElement('a');
+              link.href = url;
+              link.setAttribute('download', 'euskaraz-grid-datuak.csv');
+              link.click();
+            }}
+            className="gap-2"
+          >
+            <FileDown className="h-4 w-4" />
+            CSV Gorde
+          </Button>
+        </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
           {/* Sidebar Controls */}
@@ -562,7 +725,9 @@ export default function App() {
           <main className="lg:col-span-8">
             <div className="sticky top-8">
               <div className="mb-4 flex items-center justify-between">
-                <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-500">Aurrebista</h2>
+                <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-500">
+                  Aurrebista {items.length > itemsPerPage && `(${Math.ceil(items.length / itemsPerPage)} orri)`}
+                </h2>
                 <div className="text-xs text-slate-400">A4 Bertikala</div>
               </div>
               
@@ -579,7 +744,7 @@ export default function App() {
                     }}
                   >
                     {activeTab === 'front' ? (
-                      items.map((item) => (
+                      displayItems.map((item) => (
                         <GridCard 
                           key={item.id}
                           topText={item.topText}
@@ -595,7 +760,7 @@ export default function App() {
                         />
                       ))
                     ) : (
-                      items.map((item) => (
+                      displayItems.map((item) => (
                         <BackCard 
                           key={`back-${item.id}`}
                           text1={backText1}
